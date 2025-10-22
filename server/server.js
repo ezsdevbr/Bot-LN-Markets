@@ -1,4 +1,5 @@
 import express from "express";
+import cors from 'cors';
 import lnRoutes from "./routes/lnmarkets.js";
 import supabaseRoutes from "./routes/supabase.js";
 import { initBot } from "../bot/bot.js";
@@ -7,6 +8,7 @@ const app = express();
 const PORT = 3000;
 
 app.use(express.json());
+app.use(cors());
 
 app.use("/lnmarkets", lnRoutes);
 app.use("/supabase", supabaseRoutes);

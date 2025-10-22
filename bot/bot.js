@@ -47,7 +47,12 @@ async function getTriggers() {
         signal: AbortSignal.timeout(15000)
     });
 
-    console.log('Resposta dos triggers:', await response.json());
+    if (response.ok) {
+        triggers = await response.json();
+        console.log('Triggers solicitados com sucesso');
+    } else {
+        console.error(`Erro ao buscar triggers: ${response.status} ${response.statusText}`);
+    }
 }
 
 // Função para buscar dados do usuário
@@ -59,19 +64,18 @@ async function getUser() {
 
         if (routeResponse.ok) {
             const userData = await routeResponse.json();
-            console.log('Resposta da rota /lnmarkets/get_user:', userData);
+            console.log('Usuário solicitado com sucesso');
             user = userData;
-            //await addLog(routeResponse.status, `Usuário solicitado com sucesso`, 'getUser');
+            await addLog(routeResponse.status, `Usuário solicitado com sucesso`, 'getUser');
         } else {
-            // Não tentar ler o body em caso de erro, apenas logar o status
             console.error(`Erro HTTP ${routeResponse.status}: ${routeResponse.statusText}`);
             user = null;
-            //await addLog(routeResponse.status, `Falha ao solicitar usuário`, 'getUser');
+            await addLog(routeResponse.status, `Falha ao solicitar usuário`, 'getUser');
         }
     } catch (error) {
         console.error('Falha no backend ao solicitar usuário:', error);
         user = null;
-        //await addLog(`Falha no backend ao solicitar usuário`, null, error);
+        //await addLog(1, `Falha no backend ao solicitar usuário`, 'getUser', error);
     }
 }
 
@@ -139,7 +143,7 @@ async function getUser() {
             const openTriggers = triggers.filter(trigger => trigger.trigger_status === 'open');
             
             if (openTriggers.length > 0) {
-                const routeResponse = await fetch(`${baseUrl}/ln/get_trades?type=closed`, {
+                const routeResponse = await fetch(`${baseUrl}/lnmarkets/get_trades?type=closed`, {
                     signal: AbortSignal.timeout(10000)
                 });
 
@@ -297,161 +301,153 @@ async function getUser() {
 
 async function addLog(lnStatusError, message, lnAction, backendError = null) {
     try {
+        const userUid = user?.uid || null;
+        
         switch (lnStatusError) {
             case 200:
-                await fetch(`${baseUrl}/firebase/add_log`, {
+                await fetch(`${baseUrl}/supabase/add_log`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        'lnUserId': user.uid,
-                        'lnStatusError': lnStatusError,
-                        'error': 'OK. The request was successful.',
-                        'message': message,
-                        'timestamp': new Date().toISOString()
+                        'log_ln_user_uid': userUid,
+                        'log_ln_status_error': lnStatusError,
+                        'log_action': lnAction,
+                        'log_error': 'OK. The request was successful.',
+                        'log_message': message,
                      })
                 });
                 break;
             case 400:
-                await fetch(`${baseUrl}/firebase/add_log`, {
+                await fetch(`${baseUrl}/supabase/add_log`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        'lnUserId': user.uid,
-                        'lnStatusError': lnStatusError,
-                        'action': lnAction,
-                        'message': message,
-                        'error': 'Bad request. Your request is invalid.',
-                        'timestamp': new Date().toISOString()
+                        'log_ln_user_uid': user.uid,
+                        'log_ln_status_error': lnStatusError,
+                        'log_action': lnAction,
+                        'log_message': message,
+                        'log_error': 'Bad request. Your request is invalid.',
                      })
                 });
                 break;
             case 401:
-                await fetch(`${baseUrl}/firebase/add_log`, {
+                await fetch(`${baseUrl}/supabase/add_log`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        'lnUserId': user.uid,
-                        'lnStatusError': lnStatusError,
-                        'action': lnAction,
-                        'message': message,
-                        'error': 'Unauthorized. Your API key is wrong or you don’t have access to the requested resource.',
-                        'timestamp': new Date().toISOString()
+                        'log_ln_user_uid': user.uid,
+                        'log_ln_status_error': lnStatusError,
+                        'log_action': lnAction,
+                        'log_message': message,
+                        'log_error': 'Unauthorized. Your API key is wrong or you don’t have access to the requested resource.',
                      })
                 });
                 break;
             case 403:
-                await fetch(`${baseUrl}/firebase/add_log`, {
+                await fetch(`${baseUrl}/supabase/add_log`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        'lnUserId': user.uid,
-                        'lnStatusError': lnStatusError,
-                        'action': lnAction,
-                        'message': message,
-                        'error': 'Internal server error',
-                        'timestamp': new Date().toISOString()
+                        'log_ln_user_uid': user.uid,
+                        'log_ln_status_error': lnStatusError,
+                        'log_action': lnAction,
+                        'log_message': message,
+                        'log_error': 'Internal server error',
                      })
                 });
                 break;
             case 404:
-                await fetch(`${baseUrl}/firebase/add_log`, {
+                await fetch(`${baseUrl}/supabase/add_log`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        'lnUserId': user.uid,
-                        'lnStatusError': lnStatusError,
-                        'action': lnAction,
-                        'message': message,
-                        'error': 'Not found.',
-                        'timestamp': new Date().toISOString()
+                        'log_ln_user_uid': user.uid,
+                        'log_ln_status_error': lnStatusError,
+                        'log_action': lnAction,
+                        'log_message': message,
+                        'log_error': 'Not found.',
                      })
                 });
                 break;
             case 405:
-                await fetch(`${baseUrl}/firebase/add_log`, {
+                await fetch(`${baseUrl}/supabase/add_log`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        'lnUserId': user.uid,
-                        'lnStatusError': lnStatusError,
-                        'action': lnAction,
-                        'message': message,
-                        'error': 'Method Not Allowed. You tried to access a resource with an invalid method.',
-                        'timestamp': new Date().toISOString()
+                        'log_ln_user_uid': user.uid,
+                        'log_ln_status_error': lnStatusError,
+                        'log_action': lnAction,
+                        'log_message': message,
+                        'log_error': 'Method Not Allowed. You tried to access a resource with an invalid method.',
                      })
                 });
                 break;            
             case 418:
-                await fetch(`${baseUrl}/firebase/add_log`, {
+                await fetch(`${baseUrl}/supabase/add_log`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        'lnUserId': user.uid,
-                        'lnStatusError': lnStatusError,
-                        'action': lnAction,
-                        'message': message,
-                        'error': 'I’m a teapot.',
-                        'timestamp': new Date().toISOString()
+                        'log_ln_user_uid': user.uid,
+                        'log_ln_status_error': lnStatusError,
+                        'log_action': lnAction,
+                        'log_message': message,
+                        'log_error': 'I’m a teapot.',
                      })
                 });
                 break;            
             case 429:
-                await fetch(`${baseUrl}/firebase/add_log`, {
+                await fetch(`${baseUrl}/supabase/add_log`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        'lnUserId': user.uid,
-                        'lnStatusError': lnStatusError,
-                        'action': lnAction,
-                        'message': message,
-                        'error': 'Too many requests. Your connection is being rate limited.',
-                        'timestamp': new Date().toISOString()
+                        'log_ln_user_uid': user.uid,
+                        'log_ln_status_error': lnStatusError,
+                        'log_action': lnAction,
+                        'log_message': message,
+                        'log_error': 'Too many requests. Your connection is being rate limited.',
                      })
                 });
                 break;  
             case 500:
-                await fetch(`${baseUrl}/firebase/add_log`, {
+                await fetch(`${baseUrl}/supabase/add_log`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        'lnUserId': user.uid,
-                        'lnStatusError': lnStatusError,
-                        'action': lnAction,
-                        'message': message,
-                        'error': 'Internal server error',
-                        'timestamp': new Date().toISOString(),
+                        'log_ln_user_uid': user.uid,
+                        'log_ln_status_error': lnStatusError,
+                        'log_action': lnAction,
+                        'log_message': message,
+                        'log_error': 'Internal server error',
                      })
                 });
                 break;          
             case 503:
-                await fetch(`${baseUrl}/firebase/add_log`, {
+                await fetch(`${baseUrl}/supabase/add_log`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        'lnUserId': user.uid,
-                        'lnStatusError': lnStatusError,
-                        'action': lnAction,
-                        'message': message,
-                        'error': 'Service unavailable. We’re temporarily offline for maintenance. Please try again later.',
-                        'timestamp': new Date().toISOString()
+                        'log_ln_user_uid': user.uid,
+                        'log_ln_status_error': lnStatusError,
+                        'log_action': lnAction,
+                        'log_message': message,
+                        'log_error': 'Service unavailable. We’re temporarily offline for maintenance. Please try again later.',
                      })
                 });
                 break;
             default:
-                await fetch(`${baseUrl}/firebase/add_log`, {
+                await fetch(`${baseUrl}/supabase/add_log`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        'user': user.uid,
-                        'lnStatusError': lnStatusError,
-                        'error': backendError ? backendError.message : 'Unknown error',
-                        'timestamp': new Date().toISOString(),
-                        'message': "Erro no backend. Verifique os logs"
+                        'log_ln_user_uid': user?.uid || null,
+                        'log_ln_status_error': lnStatusError,
+                        'log_error': backendError ? backendError.message : 'Unknown error',
+                        'log_message': "Erro no backend. Verifique os logs"
                      })
                 });
                 break;
         }
     } catch (error) {
-        console.error('Erro ao adicionar log no Firebase:', error);
+        console.error('Erro ao adicionar log no Supabase:', error);
     }
 }

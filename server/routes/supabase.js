@@ -15,4 +15,12 @@ router.get("/triggers", async (req, res) => {
   }
 });
 
+router.post('/add_log', async (req, res) => {
+  console.log('Received log data:', req.body);
+  const {data, error} = await supabase
+    .from('log')
+    .insert(req.body);
+  res.json(data);
+});
+
 export default router;
