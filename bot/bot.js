@@ -1,7 +1,10 @@
 let btcPrice;
 let triggers = [];
-let openTrades = [];
+let runningTrades = [];
+let closedTrades = [];
 let currentStrategy = ''; // Padrão
+
+let lnFailsRequests = 0;
 
 let user = null;
 
@@ -11,20 +14,41 @@ export async function initBot() {
     console.log('Iniciando bot...');
     
     try {
+        await getUser();
+
+        await getTicker();
+
+        await getTriggers();
+
+        await getTrades();
+
+        await checkClosedTrades();
+
+        await updateTakeProfit();
+
+        await protectMargin();
+
         setInterval(async () => {
-            await getTriggers()
-            await getUser();
-        }, 10000);
+            await getTicker();
+            await openTrade();
+            if (lnFailsRequests >= 5) {
+                await flashCrashProtection();
+            }
+        }, 1000);
+
+        setInterval(async () => {
+            await getTriggers();
+        }, 30000);
     } catch (error) {
         console.error('Erro na inicialização do bot:', error.message);
-        return;
+        initBot();
     }
 }
 
 // Função para buscar o preço atual do BTC em USD
 async function getTicker() {
     try {
-        const routeResponse = await fetch(`${baseUrl}/ln/get_ticker`, {
+        const routeResponse = await fetch(`${baseUrl}/lnmarkets/get_ticker`, {
             signal: AbortSignal.timeout(10000)
         });
 
@@ -32,7 +56,12 @@ async function getTicker() {
             await addLog(routeResponse.status, `Ticker solicitado com sucesso`, 'futuresGetTicker');
             const ticker = await routeResponse.json();
             btcPrice = Number(ticker.lastPrice);
+
+            console.log('Preço do BTC atualizado:', btcPrice);
+            lnFailsRequests = 0;
         } else {
+            lnFailsRequests++;
+            console.error(`Erro HTTP ${routeResponse.status}: ${routeResponse.statusText}`);
             await addLog(routeResponse.status, `Falha ao solicitar ticker`, 'futuresGetTicker');
         }
     } catch (error) {
@@ -41,7 +70,28 @@ async function getTicker() {
     }
 }
 
-// Função para buscar os triggers salvos por perfis no Firestore
+// Função para buscar dados do usuário
+async function getUser() {
+    try {
+        const routeResponse = await fetch(`${baseUrl}/lnmarkets/get_user`, {
+            signal: AbortSignal.timeout(10000)
+        });
+
+        if (routeResponse.status === 200) {
+            user = await routeResponse.json();
+            await addLog(routeResponse.status, `Usuário solicitado com sucesso`, 'getUser');
+        } else {
+            user = null;
+            await addLog(routeResponse.status, `Falha ao solicitar usuário`, 'getUser');
+        }
+    } catch (error) {
+        console.error('Falha no backend ao solicitar usuário:', error);
+        user = null;
+        await addLog(1, `Falha no backend ao solicitar usuário`, 'getUser', error);
+    }
+}
+
+// Função para buscar os triggers salvos por perfis no Supabase
 async function getTriggers() {
     const response = await fetch(`${baseUrl}/supabase/triggers`, {
         signal: AbortSignal.timeout(15000)
@@ -55,84 +105,141 @@ async function getTriggers() {
     }
 }
 
-// Função para buscar dados do usuário
-async function getUser() {
+// Função para buscar trades fechados e abertos
+async function getTrades() {
     try {
-        const routeResponse = await fetch(`${baseUrl}/lnmarkets/get_user`, {
+        const closedTradesResponse = await fetch(`${baseUrl}/lnmarkets/get_trades?type=closed`, {
             signal: AbortSignal.timeout(10000)
         });
 
-        if (routeResponse.ok) {
-            const userData = await routeResponse.json();
-            console.log('Usuário solicitado com sucesso');
-            user = userData;
-            await addLog(routeResponse.status, `Usuário solicitado com sucesso`, 'getUser');
+        if (closedTradesResponse.status === 200) {
+            closedTrades = await closedTradesResponse.json();
+            console.log('Trades fechados solicitados com sucesso');
+            await addLog(closedTradesResponse.status, `Trades fechados solicitados com sucesso`, 'futuresGetTrades');
+
+            await saveTradesInSupabase();
         } else {
-            console.error(`Erro HTTP ${routeResponse.status}: ${routeResponse.statusText}`);
-            user = null;
-            await addLog(routeResponse.status, `Falha ao solicitar usuário`, 'getUser');
+            console.error(`Erro ao buscar trades fechados: ${closedTradesResponse.status} ${closedTradesResponse.statusText}`);
+            await addLog(closedTradesResponse.status, `Falha ao solicitar trades fechados`, 'futuresGetTrades');
+        }
+
+        const openTradesResponse = await fetch(`${baseUrl}/lnmarkets/get_trades?type=running`, {
+            signal: AbortSignal.timeout(10000)
+        });
+
+        if (openTradesResponse.status === 200) {
+            runningTrades = await openTradesResponse.json();
+            console.log('Trades abertos solicitados com sucesso');
+            await addLog(openTradesResponse.status, `Trades abertos solicitados com sucesso`, 'futuresGetTrades');
+        } else {
+            console.error(`Erro ao buscar trades abertos: ${openTradesResponse.status} ${openTradesResponse.statusText}`);
+            await addLog(openTradesResponse.status, `Falha ao solicitar trades abertos`, 'futuresGetTrades');
         }
     } catch (error) {
-        console.error('Falha no backend ao solicitar usuário:', error);
-        user = null;
-        //await addLog(1, `Falha no backend ao solicitar usuário`, 'getUser', error);
+        console.error('Falha no backend ao solicitar trades:', error);
+        await addLog(1, `Falha no backend ao solicitar trades`, 'futuresGetTrades', error);
+    }
+}
+
+// Função para salvar trades fechados no Supabase
+async function saveTradesInSupabase() {
+    try {
+        const deleteTradesResponse = await fetch(`${baseUrl}/supabase/delete_trades`, {
+            method: 'DELETE',
+            signal: AbortSignal.timeout(10000)
+        });
+
+        let trades = [];
+
+        if (deleteTradesResponse.status === 200) {
+            closedTrades.forEach(trade => {
+                if (trade.canceled != true) {
+                    trades.push(trade);
+                }
+            });
+
+            const addTradesResponse = await fetch(`${baseUrl}/supabase/add_trades`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(trades)
+            });
+
+            if (addTradesResponse.ok) {
+                console.log('Trades fechados salvos com sucesso no Supabase.');
+            } else {
+                console.error(`Erro ao salvar trades fechados no Supabase.`);
+            }
+        }
+    } catch (error) {
+        console.error('Falha no backend ao salvar trades fechados no Supabase:', error);
     }
 }
 
 // BOT
     // Abertura de trades
     async function openTrade() {
+        console.log('🔍 Iniciando verificação para abertura de trades...');
         try {
-            console.log('BTC Price:', btcPrice);
-            console.log('Verificando triggers para abrir trades...');
-            
+            await getTicker();
+
             for (const trigger of triggers) {
-                if (trigger.trigger_status === 'waiting' && Math.abs(btcPrice - trigger.trigger_price) <= 20) {
-                    console.log(`Abrindo trade para trigger ${trigger.id} com preço de gatilho ${trigger.trigger_price} e preço atual do BTC ${btcPrice}`);
+                try {
+                    const { trigger_status, trigger_price, trigger_strategy, trigger_type, trigger_side, trigger_leverage, trigger_quantity, trigger_takeprofit, trigger_id } = trigger;
+
+                    if (trigger_status !== 'waiting' || Math.abs(btcPrice - trigger_price) > 20) continue;
+
+                    console.log(`🚀 Abrindo trade para trigger ${trigger_id} | Preço gatilho: ${trigger_price} | BTC: ${btcPrice}`);
+
                     const newTrade = {
-                        type: trigger.trigger_type,
-                        side: trigger.trigger_side,
-                        leverage: Number(trigger.trigger_leverage),
-                        quantity: Number(trigger.trigger_quantity),
-                        price: Number(trigger.trigger_price),
-                        takeprofit: Math.round(Number(trigger.trigger_takeProfit))
+                        type: trigger_type,
+                        side: trigger_side,
+                        leverage: Number(trigger_leverage),
+                        quantity: Number(trigger_quantity),
+                        price: Number(btcPrice),
+                        ...(trigger_strategy === "takeProfit" && { takeprofit: Math.round(Number(trigger_takeprofit)) })
                     };
 
-                    const routeResponse = await fetch(`${baseUrl}/ln/add_trade`, {
+                    const addTradeResponse = await fetch(`${baseUrl}/lnmarkets/add_trade`, {
                         method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
+                        headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(newTrade),
-                        signal: AbortSignal.timeout(15000)  
+                        signal: AbortSignal.timeout(15000)
                     });
 
-                    if (routeResponse.status === 200) {
-                        console.log('Trade criado com sucesso:', newTrade);
-                        await addLog(routeResponse.status, `Trade criado com sucesso. Preço de entrada: ${newTrade.price}`, 'futuresNewTrade');
-                        const newTradeData = await routeResponse.json();
-
-                        const updateResponse = await fetch(`${baseUrl}/firebase/update_trigger_status/${trigger.id}`, {
-                            method: 'PUT',
-                            headers: {
-                                'Content-Type': 'application/json'
-                            },
-                            body: JSON.stringify({
-                                trigger_status: 'open',
-                                ln_trade_id: newTradeData.id
-                            }),
-                            signal: AbortSignal.timeout(10000)
-                        });
-                        console.log(await updateResponse.json());
-                    } else {
-                        await addLog(routeResponse.status, `Falha ao criar trade`, 'futuresNewTrade');
+                    if (addTradeResponse.status != 200) {
+                        console.warn(`⚠️ Falha ao criar trade: ${addTradeResponse.status}`);
+                        await addLog(addTradeResponse.status, `Falha ao criar trade`, 'futuresNewTrade');
+                        continue;
                     }
-                    console.log(`Trade criado para trigger ${trigger.id}`);
+
+                    const newTradeData = await addTradeResponse.json();
+                    console.log('✅ Trade criado com sucesso:', newTradeData);
+
+                    await addLog(addTradeResponse.status, `Trade criado com sucesso. Preço de entrada: ${newTrade.price}`, 'futuresNewTrade');
+
+                    const updateRes = await fetch(`${baseUrl}/supabase/update_trigger_status/${trigger_id}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ 
+                            trigger_status: 'open', 
+                            trigger_ln_trade_id: newTradeData.id 
+                        }),
+                        signal: AbortSignal.timeout(10000)
+                    });
+
+                    console.log('🔄 Status do gatilho atualizado:', await updateRes.json());
+                } catch (err) {
+                    console.error(`❌ Erro ao processar trigger: ${trigger.trigger_id}`, err);
+                    await addLog('error', `Erro ao processar trigger ${trigger.trigger_id}`, err.message);
+                    // Continua o loop mesmo com erro
                 }
             }
 
+            await getTrades();
             await getTriggers();
         } catch (error) {
-            console.error('Falha no backend ao adicionar trades:', error);
-            await addLog(`Falha no backend ao adicionar trades`, null, error);
+            console.error('💥 Erro geral ao abrir trades:', error);
+            await addLog('error', 'Falha geral no openTrade', error.message);
         }
     }
 
@@ -141,38 +248,29 @@ async function getUser() {
     async function checkClosedTrades() {
         try {
             const openTriggers = triggers.filter(trigger => trigger.trigger_status === 'open');
-            
+        
             if (openTriggers.length > 0) {
-                const routeResponse = await fetch(`${baseUrl}/lnmarkets/get_trades?type=closed`, {
-                    signal: AbortSignal.timeout(10000)
-                });
+                for (const trigger of openTriggers) {
+                    if (closedTrades.some(trade => trade.id === trigger.trigger_ln_trade_id)) {
+                        await fetch(`${baseUrl}/supabase/update_trigger_status/${trigger.trigger_id}`, {
+                            method: 'PUT',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({
+                                trigger_status: 'waiting',
+                                trigger_ln_trade_id: null
+                            }),
+                            signal: AbortSignal.timeout(10000)
+                        });
 
-                if (routeResponse.status === 200) {
-                    console.log('Trades fechados buscados com sucesso.');
-                    await addLog(routeResponse.status, `Sucesso ao solicitar trades fechados`, 'futuresGetTrades');
-                    openTrades = await routeResponse.json();
-                    for (const trigger of openTriggers) {
-                        if (openTrades.some(trade => trade.id === trigger.ln_trade_id)) {
-                            await fetch(`${baseUrl}/firebase/update_trigger_status/${trigger.id}`, {
-                                method: 'PUT',
-                                headers: {
-                                    'Content-Type': 'application/json'
-                                },
-                                body: JSON.stringify({
-                                    trigger_status: 'waiting',
-                                    ln_trade_id: ''
-                                }),
-                                signal: AbortSignal.timeout(10000)
-                            });
-
-                            console.log(`Trade ${trigger.ln_trade_id} foi fechado. Atualizando trigger ${trigger.id}.`);
-                        }
+                        console.log(`Trade ${trigger.trigger_price} foi fechado. Atualizando trigger ${trigger.trigger_id}.`);
                     }
-                    await getTriggers();
-                } else {
-                    await addLog(routeResponse.status, `Falha ao solicitar trades fechados`, 'futuresGetTrades');
                 }
-            };
+                
+                await getTrades();
+                await getTriggers();
+            }
         } catch (error) {
             console.error('Falha no backend ao verificar trades fechados:', error.message);
             await addLog(1, `Falha no backend ao verificar trades fechados`, null, error);
@@ -182,26 +280,11 @@ async function getUser() {
     // Atualização de TakeProfit para cobrir taxas de funding cost
     async function updateTakeProfit() {
         try {
-            const response = await fetch(`${baseUrl}/ln/get_trades?type=closed`, {
-                signal: AbortSignal.timeout(15000)
-            });
+            for (const runningTrade of runningTrades) {
+                if (runningTrade.takeprofit != 0 && runningTrade.sum_carry_fees >= 0) {
 
-            if (response.status !== 200) {
-                log = 'Log da função takeProfitStrategy. Erro ao buscar trades abertos.';
-                console.error('Erro ao buscar trades abertos:', response.status);
-                return;
-            }
-
-            openTrades = await response.json();
-            
-/*             for (const openTrade of openTrades) {
-                if (openTrade.takeprofit != 0 && openTrade.sum_carry_fees >= 0) {
-                    const fundingCostUsd = ((openTrade.sum_carry_fees / 1e8) * btcPrice).toFixed(2);
-                    const feesPercentageToQuantity = ((fundingCostUsd / openTrade.quantity) * 100).toFixed(2);
-                    const newTakeProfit = Number(openTrade.takeprofit + ((feesPercentageToQuantity / 100) * openTrade.takeprofit)).toFixed(0);
-
-                    if (!(Math.abs(newTakeProfit - openTrade.takeprofit) < 0.1) || openTrade.takeprofit == newTakeProfit) {
-                        const updateResponse = await fetch(`${baseUrl}/ln/update_takeprofit/${openTrade.id}`, {
+                    if (!(Math.abs(newTakeProfit - runningTrade.takeprofit) < 0.1) || runningTrade.takeprofit == newTakeProfit) {
+                        const updateResponse = await fetch(`${baseUrl}/lnmarkets/update_takeprofit/${runningTrade.id}`, {
                             method: 'PUT',
                             headers: {
                                 'Content-Type': 'application/json'
@@ -213,92 +296,65 @@ async function getUser() {
                         });
                     }
                 }
-            } */
+            }
         } catch (error) {
             return;
         }
-
-/*         try {
-            for (const trigger of triggers) {
-                if (trigger.strategy === 'takeProfit') {
-                    const response = await fetch(`${baseUrl}/ln/get_trades?type=running`, {
-                        signal: AbortSignal.timeout(15000)
-                    });
-
-                    if (response.status !== 200) {
-                        log = 'Função takeProfitStrategy executada. Erro ao buscar trades abertos.';
-                        console.error('Erro ao buscar trades abertos:', response.status);
-                        return;
-                    }
-
-                    openTrades = await response.json();
-                    
-                    if (openTrades.length > 0) {
-                        for (const openTrade of openTrades) {
-                            const fundingCost = openTrade.sum_carry_fees;
-                            const takeprofit = openTrade.takeprofit;
-
-                            if (fundingCost >= 0 && takeprofit !== 0) {
-                                const fundingCostUsd = fundingCost / 1e8 * btcPrice;
-                                const initialTakeProfit = openTrade.price * 1.007;
-                                const newTakeProfit = initialTakeProfit + (fundingCostUsd / openTrade.quantity) * initialTakeProfit;
-
-                                if (!Math.abs(newTakeProfit - openTrade.takeprofit) < 0.1 || takeprofit == newTakeProfit) {
-                                    await fetch(`${baseUrl}/ln/update_takeprofit/${openTrade.id}`, {
-                                        method: 'PUT',
-                                        headers: {
-                                            'Content-Type': 'application/json'
-                                        },
-                                        body: JSON.stringify({
-                                            newTakeProfit: Number(newTakeProfit.toFixed(0))
-                                        }),
-                                        signal: AbortSignal.timeout(15000)
-                                    });
-                                }
-                            }
-                        }
-                        log = 'Log da função takeProfitStrategy. TakeProfit atualizado para todos os trades abertos.';
-                    } else {
-                        log = 'Log da função takeProfitStrategy. Nenhum trade aberto encontrado.';
-                    }
-                }
-            };
-        } catch (error) {
-            log = `Log da função takeProfitStrategy. Erro na execução da função. ${error.message}`;
-            return;
-        } */
-
-        console.log(log);
     }
-    
-/*     async function stopGainStrategy() {
-        console.log('Executando função stopGainStrategy...');
-        let log = '';
-    } */
-// Proteção de margem
-/* async function protectMargin() {
-    const res = await fetch(`http://localhost:3000/ln/get_trades?type=running`);
-    const trades = await res.json();
 
-    trades.forEach(async trade => {
-        // Se o preço do BTC estiver a 4000 dólares do preço de liquidação, adicionar 10000 sats de margem
-        if (Math.abs(btcPrice - trade.liquidation) <= 2000) {
-            console.log(`BTC está a 4000 dólares do preço de liquidação do trade ${trade.id}. Adicionando 10000 sats de margem.`);
-            const response = await fetch(`http://localhost:3000/ln/add_margin/${trade.id}`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    margin: 5000
-                })
-            });
+    // Proteção de margem
+    async function protectMargin() {
+        for (const trade of runningTrades) {
+            if (btcPrice > trade.liquidation && (btcPrice - trade.liquidation) <= (btcPrice * 0.07)) {
+                // 1. Definir preço de liquidação desejado (10% abaixo)
+                const targetLiquidation = btcPrice * 0.9;
 
-            console.log(`Resposta da adição de margem para o trade ${trade.id}:`, response);
-        }
-    });
-} */
+                // 2. Calcular alavancagem necessária para ter esse liquidation
+                const targetLeverage = 1 / (1 - targetLiquidation / trade.price);
 
+                // 3. Margem necessária (em USD)
+                const requiredMarginUsd = trade.quantity / targetLeverage;
+
+                // 4. Converter USD → satoshis
+                const usdPerSat = trade.price / 1e8; // 1 sat em USD
+                const requiredMarginSats = requiredMarginUsd / usdPerSat;
+
+                // 5. Calcular quanto adicionar
+                const marginToAdd = requiredMarginSats - trade.margin;
+
+                const addMarginResponse = await fetch(`${baseUrl}/lnmarkets/add_margin/${trade.id}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        margin: Number(marginToAdd.toFixed(0))
+                    })
+                });
+
+                if (addMarginResponse.status === 200) {
+                    console.log(`Margem adicionada com sucesso ao trade ${trade.id}`);
+                    await addLog(addMarginResponse.status, `Margem adicionada com sucesso ao trade ${trade.id}`, 'futuresAddMarginTrade');
+
+                    await getTrades();
+                    await getUser();
+                } else {
+                    console.error(`Falha ao adicionar margem ao trade ${trade.id}`);
+                    await addLog(addMarginResponse.status, `Falha ao adicionar margem de ${marginToAdd.toFixed(0)} sats ao trade ${trade.id}. Saldo disponivel: ${user.balance} sats`, 'futuresAddMarginTrade');
+                }
+            }
+        };
+    }
+
+//Sistema anti-flash-crash LNMarkets
+async function flashCrashProtection() {
+    console.warn('Múltiplas falhas de requisição detectadas. Executando proteção contra flash crash.');
+
+    // Lógica de proteção contra flash crash
+    // Por exemplo, pausar operações ou ajustar parâmetros de negociação
+}
+
+// Função para adicionar logs no Supabase
 async function addLog(lnStatusError, message, lnAction, backendError = null) {
     try {
         const userUid = user?.uid || null;

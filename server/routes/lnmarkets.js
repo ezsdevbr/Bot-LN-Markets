@@ -18,7 +18,7 @@ router.get("/get_ticker", async (req, res) => {
 router.get("/get_trades", async (req, res) => {
   const { type } = req.query;
   const client = createLnMarketsClient();
-  const trades = await client.futuresGetTrades({ type });
+  const trades = await client.futuresGetTrades({ type, limit: 1000 });
   res.json(trades);
 });
 
@@ -30,9 +30,10 @@ router.post("/add_trade", async (req, res) => {
 
 router.post("/add_margin/:tradeId", async (req, res) => {
   const { tradeId } = req.params;
+  const { margin } = req.body;
   const client = createLnMarketsClient();
-  const response = await client.futuresAddMarginTrade(tradeId, req.body);
-  res.json(response);
+  const lnResponse = await client.futuresAddMarginTrade({ id: tradeId, amount: margin });
+  res.json(lnResponse);
 });
 
 // Rota para atualizar takeprofit de um trade
